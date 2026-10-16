@@ -1,7 +1,8 @@
 name: Build APK from ZIP
 
 # Estrutura esperada no repositório:
-#   CalculadoraPremium-GitHub.zip            (projeto Android compactado)
+#   CalculadoraPremium-V2.zip                (projeto Android compactado; aceita também
+#                                             CalculadoraPremium-GitHub.zip como alternativa)
 #   .github/workflows/build-apk-from-zip.yml (este arquivo)
 # Se o ZIP não existir, o workflow usa o projeto Android na raiz do repositório.
 
@@ -11,6 +12,7 @@ on:
     paths:
       - 'CalculadoraPremium-GitHub.zip'
       - 'CalculadoraPremium-GitHub-CORRIGIDO.zip'
+      - 'CalculadoraPremium-V2.zip'
       - '.github/workflows/build-apk-from-zip.yml'
 
 permissions:
@@ -21,8 +23,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZIP_NAME: CalculadoraPremium-GitHub.zip
-  ZIP_FALLBACK: CalculadoraPremium-GitHub-CORRIGIDO.zip
+  ZIP_NAME: CalculadoraPremium-V2.zip
+  ZIP_FALLBACK: CalculadoraPremium-GitHub.zip CalculadoraPremium-GitHub-CORRIGIDO.zip
   GRADLE_VERSION: '8.9'
   ANDROID_PLATFORM: 'platforms;android-35'
   ANDROID_BUILD_TOOLS: 'build-tools;35.0.0'
@@ -43,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           ZIP=""
-          for candidate in "$ZIP_NAME" "$ZIP_FALLBACK"; do
+          for candidate in "$ZIP_NAME" $ZIP_FALLBACK; do
             if [ -f "$candidate" ]; then ZIP="$candidate"; break; fi
           done
 
@@ -74,7 +76,8 @@ jobs:
           for f in app/build.gradle.kts app/src/main/AndroidManifest.xml \
                    app/src/main/java/br/com/calculadorapremium/MainActivity.kt \
                    app/src/main/res/drawable/ic_calculator.xml \
-                   app/src/main/res/drawable-nodpi/payment_dog.jpg; do
+                   app/src/main/res/drawable-nodpi/payment_dog.jpg \
+                   app/src/main/res/values/themes.xml; do
             if [ ! -f "$DIR/$f" ]; then echo "::error::Arquivo obrigatório ausente: $f"; exit 1; fi
           done
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
