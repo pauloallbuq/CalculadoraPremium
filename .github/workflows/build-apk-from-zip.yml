@@ -1,4 +1,3 @@
-
 name: Build APK from uploaded ZIP
 
 on:
@@ -20,18 +19,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify ZIP exists
+      - name: Verify ZIP
         run: |
-          ls -la
           test -f CalculadoraPremium-GitHub.zip
-          echo "Project ZIP found."
+          unzip -t CalculadoraPremium-GitHub.zip
 
       - name: Extract Android project
         run: |
           mkdir source
           unzip -q CalculadoraPremium-GitHub.zip -d source
-          echo "Files extracted:"
-          find source -maxdepth 3 -type f | head -50
           test -f source/settings.gradle.kts
           test -f source/app/build.gradle.kts
 
@@ -47,13 +43,16 @@ jobs:
           gradle-version: '8.9'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: false
-          packages: |
-            platforms;android-35
-            build-tools;35.0.0
+          packages: ''
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager --install "platforms;android-35"
+          sdkmanager --install "build-tools;35.0.0"
 
       - name: Compile APK
         working-directory: source
