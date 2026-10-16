@@ -4,10 +4,9 @@ name: Build APK from uploaded ZIP
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
-      - principal
+    paths:
+      - 'CalculadoraPremium-GitHub.zip'
+      - '.github/workflows/build-apk-from-zip.yml'
 
 permissions:
   contents: read
@@ -21,14 +20,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract uploaded package
+      - name: Verify ZIP exists
         run: |
-          mkdir package
-          unzip -q CalculadoraPremium-GitHub-Upload-CORRIGIDO.zip -d package
-          PROJECT_ZIP="$(find package -type f -name 'CalculadoraPremium-GitHub.zip' -print -quit)"
-          test -n "$PROJECT_ZIP"
+          ls -la
+          test -f CalculadoraPremium-GitHub.zip
+          echo "Project ZIP found."
+
+      - name: Extract Android project
+        run: |
           mkdir source
-          unzip -q "$PROJECT_ZIP" -d source
+          unzip -q CalculadoraPremium-GitHub.zip -d source
+          echo "Files extracted:"
+          find source -maxdepth 3 -type f | head -50
           test -f source/settings.gradle.kts
           test -f source/app/build.gradle.kts
 
@@ -56,7 +59,7 @@ jobs:
         working-directory: source
         run: gradle assembleDebug
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: CalculadoraPremium-debug-apk
