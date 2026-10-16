@@ -1,67 +1,154 @@
-name: Build APK from uploaded ZIP
+name: Build APK from ZIP
+
+# Estrutura esperada no repositório:
+#   CalculadoraPremium-GitHub.zip            (projeto Android compactado)
+#   .github/workflows/build-apk-from-zip.yml (este arquivo)
+# Se o ZIP não existir, o workflow usa o projeto Android na raiz do repositório.
 
 on:
   workflow_dispatch:
   push:
     paths:
       - 'CalculadoraPremium-GitHub.zip'
+      - 'CalculadoraPremium-GitHub-CORRIGIDO.zip'
       - '.github/workflows/build-apk-from-zip.yml'
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIP_NAME: CalculadoraPremium-GitHub.zip
+  ZIP_FALLBACK: CalculadoraPremium-GitHub-CORRIGIDO.zip
+  GRADLE_VERSION: '8.9'
+  ANDROID_PLATFORM: 'platforms;android-35'
+  ANDROID_BUILD_TOOLS: 'build-tools;35.0.0'
+
 jobs:
   build:
-    name: Compile Android APK
+    name: Compilar app-debug.apk
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout repository
+      - name: Baixar o repositório
         uses: actions/checkout@v4
 
-      - name: Verify ZIP
+      - name: Validar e extrair o ZIP do projeto
+        id: project
+        shell: bash
         run: |
-          test -f CalculadoraPremium-GitHub.zip
-          unzip -t CalculadoraPremium-GitHub.zip
+          set -euo pipefail
+          ZIP=""
+          for candidate in "$ZIP_NAME" "$ZIP_FALLBACK"; do
+            if [ -f "$candidate" ]; then ZIP="$candidate"; break; fi
+          done
 
-      - name: Extract Android project
-        run: |
-          mkdir source
-          unzip -q CalculadoraPremium-GitHub.zip -d source
-          test -f source/settings.gradle.kts
-          test -f source/app/build.gradle.kts
+          if [ -n "$ZIP" ]; then
+            echo "ZIP encontrado: $ZIP ($(stat -c%s "$ZIP") bytes)"
+            unzip -tq "$ZIP"                      # falha se o ZIP estiver corrompido
+            rm -rf "$RUNNER_TEMP/projeto"
+            mkdir -p "$RUNNER_TEMP/projeto"
+            unzip -q "$ZIP" -d "$RUNNER_TEMP/projeto"
+            SEARCH_ROOT="$RUNNER_TEMP/projeto"
+          else
+            echo "Nenhum ZIP encontrado; usando o projeto na raiz do repositório."
+            SEARCH_ROOT="$GITHUB_WORKSPACE"
+          fi
 
-      - name: Set up JDK 17
+          # Localiza o settings.gradle(.kts) mais próximo da raiz (não supõe pasta fixa).
+          SETTINGS="$(find "$SEARCH_ROOT" -maxdepth 4 \( -name settings.gradle.kts -o -name settings.gradle \) \
+                       -not -path '*/build/*' -not -path '*/__MACOSX/*' \
+                       | awk -F/ '{print NF, $0}' | sort -n | head -n 1 | cut -d' ' -f2-)"
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::settings.gradle(.kts) não encontrado em $SEARCH_ROOT"
+            find "$SEARCH_ROOT" -maxdepth 3 | head -n 100
+            exit 1
+          fi
+          DIR="$(dirname "$SETTINGS")"
+          echo "Projeto Android localizado em: $DIR"
+
+          for f in app/build.gradle.kts app/src/main/AndroidManifest.xml \
+                   app/src/main/java/br/com/calculadorapremium/MainActivity.kt \
+                   app/src/main/res/drawable/ic_calculator.xml \
+                   app/src/main/res/drawable-nodpi/payment_dog.jpg; do
+            if [ ! -f "$DIR/$f" ]; then echo "::error::Arquivo obrigatório ausente: $f"; exit 1; fi
+          done
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
+      - name: Configurar Gradle ${{ env.GRADLE_VERSION }}
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: ${{ env.GRADLE_VERSION }}
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          accept-android-sdk-licenses: true
-          log-accepted-android-sdk-licenses: false
-          packages: ''
-
-      - name: Install Android SDK packages
+      - name: Instalar Android SDK e aceitar licenças
+        shell: bash
         run: |
-          sdkmanager --install "platforms;android-35"
-          sdkmanager --install "build-tools;35.0.0"
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          test -x "$SDKMANAGER" || { echo "::error::sdkmanager não encontrado em $SDK"; exit 1; }
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "$ANDROID_PLATFORM" "$ANDROID_BUILD_TOOLS" "platform-tools"
+          printf 'sdk.dir=%s\n' "$SDK" > "${{ steps.project.outputs.dir }}/local.properties"
 
-      - name: Compile APK
-        working-directory: source
-        run: gradle assembleDebug
+      - name: Compilar APK de depuração
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set +e   # tratamos o código de saída manualmente para mostrar o erro real
+          set -o pipefail
+          # Compilador Kotlin "in-process": os erros (linhas "e: ...") saem direto no log.
+          gradle assembleDebug --no-daemon --stacktrace --warning-mode all \
+            -Pkotlin.compiler.execution.strategy=in-process 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
+          STATUS=${PIPESTATUS[0]}
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::group::Resumo dos erros reais da compilação"
+            grep -nE '^e: |error:|What went wrong|FAILED|Caused by|Exception' "$RUNNER_TEMP/gradle-build.log" | head -n 80 || true
+            echo "::endgroup::"
+            grep -E '^e: ' "$RUNNER_TEMP/gradle-build.log" | head -n 20 | while read -r line; do
+              echo "::error::$line"
+            done
+            exit "$STATUS"
+          fi
 
-      - name: Upload APK artifact
+      - name: Verificar APK gerado
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK" || { echo "::error::APK não encontrado em $APK"; exit 1; }
+          ls -l "$APK"
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar APK nos Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: CalculadoraPremium-debug-apk
-          path: source/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publicar log completo em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: ${{ runner.temp }}/gradle-build.log
+          if-no-files-found: ignore
+          retention-days: 7
